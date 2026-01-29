@@ -2,47 +2,25 @@ import re
 import whisper
 import edge_tts
 import numpy as np
-from scipy.io.wavfile import read
 import asyncio
 import os
-from playsound import playsound
 import threading
-from queue import Queue
+from playsound import playsound
+from scipy.io.wavfile import read
 
 class SpeechConverter:
-    # Aumenta 20% a velocidade (pode ajustar: +10%, +30%, etc)
     voice_speed = "+20%"
-
-    # pt-BR-AntonioNeural - male
-    # pt-BR-FranciscaNeural - female
-    # pt-BR-ThalitaNeural - female
     voice_sample = "pt-BR-AntonioNeural"
-
-    # Configurações de segurança
-    MAX_AUDIO_DURATION = 120  # Máximo 2 minutos
+    MAX_AUDIO_DURATION_SECONDS = 120
     SAMPLE_RATE = 16000
 
     def __init__(self, modelo_whisper="base"):
-        """
-        Inicializa o conversor de fala com modelo Whisper carregado
-
-        Args:
-            modelo_whisper (str): Nome do modelo ('tiny', 'base', 'small', 'medium', 'large')
-        """
-        print(f"🔄 Carregando modelo Whisper '{modelo_whisper}'...")
         self.model = whisper.load_model(modelo_whisper)
-        print(f"✅ Modelo Whisper '{modelo_whisper}' carregado!")
-
-        # Controle para TTS streaming
-        self.fila_audio = Queue()
+        print(f"Modelo Whisper '{modelo_whisper}' carregado!")
         self.esta_reproduzindo = False
 
-    # ... (mantenha todos os outros métodos de transcrição) ...
-
     @staticmethod
-    def saniteze_ia_response(texto):
-        """Remove emojis, markdown e outros caracteres que não devem ser falados"""
-
+    def sanitize_ia_response(texto):
         texto = re.sub(r'[😀-🙏🌀-🗿🚀-🛿🇀-🇿✀-➿]+', '', texto)
         texto = re.sub(r'\*+', '', texto)
         texto = re.sub(r'_+', '', texto)
@@ -51,80 +29,63 @@ class SpeechConverter:
         texto = re.sub(r'\[\s*\]|\(\s*\)', '', texto)
         texto = re.sub(r'\s+', ' ', texto)
         texto = re.sub(r'\n+', '. ', texto)
-
         return texto.strip()
 
     @staticmethod
     async def text_to_speech(texto, arquivo_saida):
         """Converte texto em áudio usando Edge TTS"""
-        print(f"🔊 Gerando áudio da resposta...")
-
-        texto_limpo = SpeechConverter.saniteze_ia_response(texto)
+        sanitized_text = SpeechConverter.sanitize_ia_response(texto)
 
         communicate = edge_tts.Communicate(
-            texto_limpo,
+            sanitized_text,
             SpeechConverter.voice_sample,
             rate=SpeechConverter.voice_speed
         )
 
         await communicate.save(arquivo_saida)
-        print(f"✅ Áudio salvo em: {arquivo_saida}")
 
-    async def text_to_speech_stream(self, texto_stream_generator, pasta_temp="temp_audio_chunks"):
+    async def text_to_speech_stream(
+        self,
+        texto_stream_generator,
+        pasta_temp="temp_audio_chunks"
+    ):
         """
-        Converte texto para fala em streaming (gera e reproduz em tempo real)
-
-        Args:
-            texto_stream_generator: Generator que produz chunks de texto
-            pasta_temp (str): Pasta temporária para chunks de áudio
+        Converte texto para fala em streaming (gera e reproduz em tempo real), priorizando naturalidade.
+        Só gera áudio quando termina frase (., !, ?) ou buffer > 200 caracteres.
         """
         print("🔊 Iniciando síntese de voz em streaming...")
-
-        # Cria pasta temporária se não existir
         if not os.path.exists(pasta_temp):
             os.makedirs(pasta_temp)
-
         buffer_texto = ""
         chunk_count = 0
         arquivos_audio = []
-
-        # Inicia thread de reprodução
         thread_reproducao = threading.Thread(target=self._reproduzir_chunks_continuo, args=(arquivos_audio,))
         thread_reproducao.daemon = True
         thread_reproducao.start()
-
         try:
-            # Processa chunks de texto conforme chegam
             for chunk_texto in texto_stream_generator:
                 buffer_texto += chunk_texto
-
-                # Quando completar uma frase ou tiver texto suficiente
-                if self._deve_gerar_audio(buffer_texto):
-                    # Limpa o texto
-                    texto_limpo = self.saniteze_ia_response(buffer_texto)
-
+                # Só gera áudio se terminar frase ou buffer muito grande
+                while True:
+                    split = self._split_fim_frase(buffer_texto)
+                    if split is None:
+                        break
+                    texto_fala, buffer_texto = split
+                    texto_limpo = self.sanitize_ia_response(texto_fala)
                     if texto_limpo:
-                        # Gera arquivo de áudio
                         arquivo_chunk = os.path.join(pasta_temp, f"chunk_{chunk_count}.mp3")
-
-                        # Cria áudio
                         communicate = edge_tts.Communicate(
                             texto_limpo,
                             self.voice_sample,
                             rate=self.voice_speed
                         )
                         await communicate.save(arquivo_chunk)
-
-                        # Adiciona à fila de reprodução
                         arquivos_audio.append(arquivo_chunk)
                         print(f"🎵 Chunk {chunk_count} gerado e enfileirado")
-
                         chunk_count += 1
-                        buffer_texto = ""
-
             # Processa texto restante
             if buffer_texto.strip():
-                texto_limpo = self.saniteze_ia_response(buffer_texto)
+                texto_limpo = self.sanitize_ia_response(buffer_texto)
                 if texto_limpo:
                     arquivo_chunk = os.path.join(pasta_temp, f"chunk_{chunk_count}.mp3")
                     communicate = edge_tts.Communicate(
@@ -135,17 +96,25 @@ class SpeechConverter:
                     await communicate.save(arquivo_chunk)
                     arquivos_audio.append(arquivo_chunk)
                     print(f"🎵 Chunk final {chunk_count} gerado")
-
-            # Aguarda todas as reproduções terminarem
             while len(arquivos_audio) > 0:
                 await asyncio.sleep(0.1)
-
             print("✅ Síntese e reprodução em streaming finalizada!")
-
         finally:
-            # Limpa arquivos temporários
-            await asyncio.sleep(0.5)  # Aguarda reprodução final
+            await asyncio.sleep(0.5)
             self._limpar_pasta_temp(pasta_temp)
+
+    def _split_fim_frase(self, texto):
+        """
+        Se encontrar fim de frase (., !, ?) ou buffer > 200, separa para gerar áudio
+        Retorna (texto_para_falar, texto_restante) ou None
+        """
+        match = re.search(r'([.!?])', texto)
+        if match:
+            idx = match.end()
+            return texto[:idx], texto[idx:]
+        if len(texto) > 200:
+            return texto[:200], texto[200:]
+        return None
 
     def _deve_gerar_audio(self, texto):
         """
@@ -270,9 +239,9 @@ class SpeechConverter:
         duracao = len(audio_array) / self.SAMPLE_RATE
 
         # Limita duração máxima
-        if duracao > self.MAX_AUDIO_DURATION:
-            print(f"⚠️ Áudio muito longo ({duracao:.1f}s). Truncando para {self.MAX_AUDIO_DURATION}s")
-            max_samples = int(self.MAX_AUDIO_DURATION * self.SAMPLE_RATE)
+        if duracao > self.MAX_AUDIO_DURATION_SECONDS:
+            print(f"⚠️ Áudio muito longo ({duracao:.1f}s). Truncando para {self.MAX_AUDIO_DURATION_SECONDS}s")
+            max_samples = int(self.MAX_AUDIO_DURATION_SECONDS * self.SAMPLE_RATE)
             audio_array = audio_array[:max_samples]
 
         # Verifica se é 1D (mono)
