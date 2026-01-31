@@ -1,96 +1,58 @@
-# assistant_gemini.py
-import google.generativeai as genai
-import threading
-from queue import Queue
+import io
 import base64
 from PIL import Image
-import io
+import google.generativeai as genai
+from typing import Generator, Optional
+from bot.abstract.abstract_assistant import AbstractAssistant
 
-class AssistantGemini:
-    def __init__(self, api_key="AIzaSyBJzBHgzyt9zvT-QWxevOxysdMBLr_h96k"):
+class AssistantGemini(AbstractAssistant):
+    """Modelo de assistente usando Google Gemini"""
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model_name: str = "gemini-flash-latest"
+    ):
         """
-        Inicializa assistente com Gemini
-
         Args:
-            api_key (str): Chave da API do Google
+            api_key: Chave da API do Google
+            model_name: Nome do modelo Gemini
         """
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-flash-latest')
-        self.chat = None
-        self.historico_conversa = []
-        self.ultima_imagem = None
-        self.lock = threading.Lock()
+        self.model_name = model_name
+        self.model      = genai.GenerativeModel(model_name)
 
-        print("✅ Assistente Gemini inicializado")
-
-    def set_screenshot(self, img_base64):
-        """Define screenshot atual"""
-        with self.lock:
-            # Converte base64 para PIL Image
-            img_data = base64.b64decode(img_base64)
-            self.ultima_imagem = Image.open(io.BytesIO(img_data))
-
-    def talk_stream_generator(self, user_message, incluir_visao=True):
-        """
-        Conversa com streaming
-
-        Args:
-            user_message (str): Mensagem do usuário
-            incluir_visao (bool): Incluir screenshot
-
-        Yields:
-            str: Chunks da resposta
-        """
-        print("🤖 Gerando resposta", end='')
-
-        with self.lock:
-            usar_imagem = incluir_visao and self.ultima_imagem is not None
-            imagem_atual = self.ultima_imagem if usar_imagem else None
-
-        if usar_imagem:
-            print(" (com visão)...\n")
-        else:
-            print("...\n")
+    def talk_stream_generator(
+        self,
+        user_message: str,
+        system_prompt: str,
+        historico: list,
+        imagem_base64: Optional[str] = None
+    ) -> Generator[str, None, None]:
+        """Gera resposta em streaming"""
 
         try:
-            # Prepara prompt
-            if usar_imagem:
-                # Com imagem
-                response = self.model.generate_content(
-                    [user_message, imagem_atual],
-                    stream=True
-                )
-            else:
-                # Sem imagem
-                response = self.model.generate_content(
-                    user_message,
-                    stream=True
-                )
+            prompt_completo = f"{system_prompt}\n\n{user_message}"
 
-            print("💬 Resposta: ", end='', flush=True)
-            resposta_completa = ""
+            if imagem_base64:
+                img_data = base64.b64decode(imagem_base64)
+                imagem   = Image.open(io.BytesIO(img_data))
+                content  = [prompt_completo, imagem]
+            else:
+                content = prompt_completo
+
+            response = self.model.generate_content(
+                content,
+                stream=True,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                )
+            )
 
             for chunk in response:
                 if chunk.text:
-                    resposta_completa += chunk.text
-                    print(chunk.text, end='', flush=True)
                     yield chunk.text
 
-            print("\n")
-
         except Exception as e:
-            print(f"\n❌ Erro: {e}")
+            print(f"❌ Erro no Gemini: {e}")
             yield ""
-
-    def talk(self, user_message, incluir_visao=True):
-        """Conversa (versão completa)"""
-        resposta = ""
-        for chunk in self.talk_stream_generator(user_message, incluir_visao):
-            resposta += chunk
-        return resposta
-
-    def limpar_historico(self):
-        """Limpa histórico"""
-        self.historico_conversa = []
-        self.chat = None
-        print("🗑️ Histórico limpo")

@@ -29,6 +29,13 @@ class AudioProcessor:
         write(AudioProcessor.temp_file, AudioProcessor.sample_rate, recorded_audio)
 
     @staticmethod
+    def delete_audio():
+        """Deleta o arquivo de áudio temporário"""
+        import os
+        if os.path.exists(AudioProcessor.temp_file):
+            os.remove(AudioProcessor.temp_file)
+
+    @staticmethod
     def calcular_energia(audio_chunk):
         """Calcula a energia (volume) do chunk de áudio"""
         return np.abs(audio_chunk).mean()

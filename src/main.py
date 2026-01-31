@@ -1,47 +1,42 @@
+import os
 import asyncio
-from audio.audio_processor import AudioProcessor
-from speech_converter.speech_converter import SpeechConverter
+from dotenv import load_dotenv
 from bot.assistant import Assistant
 from screen.screen_capture import ScreenCapture
+from audio.audio_processor import AudioProcessor
 from bot.gemini.assistant_gemini import AssistantGemini
-import os
+from speech_converter.speech_converter import SpeechConverter
+
+load_dotenv()
 
 async def main_async():
     print("=== Assistente de Voz com Visão em Tempo Real ===\n")
 
-    # Inicializa componentes
-    audio_processor = AudioProcessor()
+    audio_processor  = AudioProcessor()
     speech_converter = SpeechConverter(modelo_whisper="base")
-    assistant = AssistantGemini()
+    assistant        = Assistant(AssistantGemini(api_key=os.getenv("GEMINI_API_KEY")))
+
     screen_capture = ScreenCapture(
         intervalo_captura=5.0,
         qualidade=60,
         resolucao_maxima=(1200, 800)
-    )  # Aumentei intervalo
+    )
 
-    # Conecta callbacks
     audio_processor.set_transcricao_callback(
         speech_converter.transcribe_audio_array
     )
     audio_processor.set_ia_callback(assistant)
 
-    # Callback para captura de tela
     def on_screenshot(img_base64):
         if img_base64:
             assistant.set_screenshot(img_base64)
-            # print("📸 Screenshot atualizada")  # Removi para menos poluição
 
-    # Inicia captura contínua de tela
     screen_capture.iniciar_captura_continua(callback=on_screenshot)
-
-    print("✅ Sistema pronto! Todos os componentes conectados.")
-    print("👁️ Visão da tela ATIVA - A IA pode ver o que você está fazendo!\n")
 
     try:
         while True:
             print("─" * 60)
 
-            # Grava com streaming ativo
             audio = audio_processor.record_audio(streaming=True)
 
             if audio is None:
@@ -92,16 +87,14 @@ async def main_async():
 
             usar_visao = any(palavra in transcricao.lower() for palavra in palavras_chave_visao)
 
-            # Gera resposta com streaming (com ou sem visão)
             texto_generator = assistant.talk_stream_generator(transcricao, incluir_visao=usar_visao)
 
-            # Converte e reproduz em streaming
             await speech_converter.text_to_speech_stream(texto_generator)
 
             print()
 
+            audio_processor.delete_audio()
     finally:
-        # Cleanup
         screen_capture.parar_captura()
         print("\n🛑 Sistema encerrado")
 

@@ -1,148 +1,86 @@
-import ollama
+# bot/assistant.py
 import threading
-from queue import Queue
+from typing import Optional
+from bot.abstract.abstract_assistant import AbstractAssistant
 
 class Assistant:
-    model = "gemma2:2b"
-    # model = "llava"
+    """Facade para gerenciar assistentes de IA com Strategy Pattern"""
 
-    def __init__(self):
-        """Inicializa o assistente com histórico e controle de threading"""
+    def __init__(self, assistant: AbstractAssistant):
+        """
+        Args:
+            assistant: Strategy de IA (OllamaAssistant, GeminiAssistant, etc)
+        """
+        self.assistant = assistant
         self.historico_conversa = []
         self.contexto_parcial = ""
         self.resposta_preparada = ""
         self.processando = False
         self.lock = threading.Lock()
-        self.ultima_imagem = None  # Armazena última captura de tela
+        self.ultima_imagem = None
 
-        self.system_prompt = """Você é um assistente de voz amigável e prestativo com capacidade de visão.
-Você pode ver a tela do usuário e ajudá-lo com o que está fazendo.
-Quando receber uma imagem da tela, descreva o que vê e ajude baseado no contexto visual.
-Responda de forma natural, concisa e direta, como em uma conversa falada.
-Nunca utilize emojis, asteriscos, formatação markdown ou listas longas.
-Fale de forma clara e objetiva, sem repetições desnecessárias.
-Seja específico sobre o que vê na tela quando relevante."""
-
-        print(f"✅ Assistente inicializado com modelo: {self.model}")
-
-    def set_screenshot(self, img_base64):
+        self.system_prompt = """
+            Você é um assistente de voz amigável e prestativo com capacidade de visão.
+            Você pode ver a tela do usuário e ajudá-lo com o que está fazendo.
+            Quando receber uma imagem da tela, verifique se o usuário solicitou algo e o ajude conforme necessário.
+            Responda de forma natural, concisa e direta, como em uma conversa falada.
+            Nunca utilize emojis, asteriscos, formatação markdown ou listas longas.
+            Fale de forma clara e objetiva, sem repetições desnecessárias e textos longos.
         """
-        Define a screenshot atual para contexto visual
 
-        Args:
-            img_base64 (str): Imagem em base64
-        """
+    def set_screenshot(self, img_base64: str) -> None:
+        """Define screenshot atual"""
         with self.lock:
             self.ultima_imagem = img_base64
 
-    def processar_contexto_parcial(self, texto_parcial):
-        """
-        Processa contexto parcial enquanto o usuário ainda está falando
-
-        Args:
-            texto_parcial (str): Transcrição parcial
-        """
+    def processar_contexto_parcial(self, texto_parcial: str) -> None:
+        """Processa contexto parcial (pré-aquecimento)"""
         if not texto_parcial or not texto_parcial.strip():
             return
 
         with self.lock:
             self.contexto_parcial = texto_parcial
-            print(f"🧠 IA processando contexto parcial em background...")
 
-        # Inicia thread para pré-processar
-        thread = threading.Thread(target=self._pre_processar_contexto, args=(texto_parcial,))
-        thread.daemon = True
-        thread.start()
-
-    def _pre_processar_contexto(self, contexto):
-        """Pré-processa o contexto em background (prepara a IA)"""
-        try:
-            mensagem_parcial = f"[CONTEXTO PARCIAL - Usuário ainda falando]\n{contexto}\n\nPrepare-se para responder, mas aguarde a pergunta completa."
-
-            # Mensagens para aquecimento (SEM imagem no pré-processamento)
-            mensagens = [
-                {'role': 'system', 'content': self.system_prompt}
-            ] + self.historico_conversa + [
-                {'role': 'user', 'content': mensagem_parcial}
-            ]
-
-            # Faz uma chamada rápida para "aquecer" a IA
-            response = ollama.chat(
-                model=self.model,
-                messages=mensagens,
-                stream=False,
-                options={'num_predict': 10}
-            )
-
-            print("💡 IA aquecida e pronta para resposta final")
-
-        except Exception as e:
-            print(f"⚠️ Erro no pré-processamento: {e}")
-
-    def talk_stream_generator(self, user_message, incluir_visao=True):
+    def talk_stream_generator(self, user_message: str, incluir_visao: bool = True):
         """
-        Conversa com streaming retornando um generator
+        Conversa com streaming
 
         Args:
-            user_message (str): Mensagem do usuário
-            incluir_visao (bool): Se True, inclui screenshot no contexto
+            user_message: Mensagem do usuário
+            incluir_visao: Se True, inclui screenshot
 
         Yields:
             str: Chunks da resposta
         """
-        print("🤖 Gerando resposta", end='')
-        if incluir_visao and self.ultima_imagem:
-            print(" (com visão da tela)...\n")
-        else:
-            print("...\n")
 
         with self.lock:
             self.processando = True
-            usar_imagem = incluir_visao and self.ultima_imagem is not None
-            imagem_atual = self.ultima_imagem if usar_imagem else None
+            imagem_atual = self.ultima_imagem if incluir_visao else None
+
+        if imagem_atual:
+            print(" (com visão)...\n")
+        else:
+            print("...\n")
 
         try:
-            # Prepara mensagens base
-            mensagens = [
-                {'role': 'system', 'content': self.system_prompt}
-            ] + self.historico_conversa
-
-            # Adiciona mensagem do usuário (com ou sem imagem)
-            if usar_imagem:
-                mensagens.append({
-                    'role': 'user',
-                    'content': user_message,
-                    'images': [imagem_atual]
-                })
-            else:
-                mensagens.append({
-                    'role': 'user',
-                    'content': user_message
-                })
-
-            # Stream da resposta
-            resposta_completa = ""
             print("💬 Resposta: ", end='', flush=True)
+            resposta_completa = ""
 
-            stream = ollama.chat(
-                model=self.model,
-                messages=mensagens,
-                stream=True
-            )
-
-            for chunk in stream:
-                if 'message' in chunk and 'content' in chunk['message']:
-                    conteudo = chunk['message']['content']
-                    resposta_completa += conteudo
-                    print(conteudo, end='', flush=True)
-                    yield conteudo
+            for chunk in self.assistant.talk_stream_generator(
+                user_message=user_message,
+                system_prompt=self.system_prompt,
+                historico=self.historico_conversa,
+                imagem_base64=imagem_atual
+            ):
+                resposta_completa += chunk
+                print(chunk, end='', flush=True)
+                yield chunk
 
             print("\n")
 
-            # Adiciona ao histórico (sem a imagem para economizar memória)
             self.historico_conversa.append({
                 'role': 'user',
-                'content': user_message + (" [com imagem da tela]" if usar_imagem else "")
+                'content': user_message + (" [com imagem]" if imagem_atual else "")
             })
             self.historico_conversa.append({
                 'role': 'assistant',
@@ -153,68 +91,16 @@ Seja específico sobre o que vê na tela quando relevante."""
                 self.resposta_preparada = resposta_completa
 
         except Exception as e:
-            print(f"\n❌ Erro ao gerar resposta: {e}")
+            print(f"\n❌ Erro: {e}")
             yield ""
 
         finally:
             with self.lock:
                 self.processando = False
 
-    def talk(self, user_message, incluir_visao=True):
-        """
-        Conversa com o assistente (com ou sem visão)
-
-        Args:
-            user_message (str): Mensagem do usuário
-            incluir_visao (bool): Se True, inclui screenshot
-
-        Returns:
-            str: Resposta completa
-        """
+    def talk(self, user_message: str, incluir_visao: bool = True) -> str:
+        """Conversa (versão completa)"""
         resposta_completa = ""
         for chunk in self.talk_stream_generator(user_message, incluir_visao):
             resposta_completa += chunk
         return resposta_completa
-
-    def limpar_historico(self):
-        """Limpa o histórico de conversas"""
-        with self.lock:
-            self.historico_conversa = []
-            self.contexto_parcial = ""
-            self.resposta_preparada = ""
-        print("🗑️ Histórico de conversa limpo")
-
-    def get_historico(self):
-        """Retorna o histórico de conversas"""
-        with self.lock:
-            return self.historico_conversa.copy()
-
-    def mostrar_historico(self):
-        """Exibe o histórico de conversas formatado"""
-        print("\n📜 Histórico de Conversa:")
-        print("─" * 60)
-        for msg in self.historico_conversa:
-            role = "👤 Você" if msg['role'] == 'user' else "🤖 Assistente"
-            print(f"{role}: {msg['content']}")
-            print("─" * 60)
-
-    @staticmethod
-    def listar_modelos():
-        """Lista modelos disponíveis no Ollama"""
-        try:
-            models = ollama.list()
-            print("\n📋 Modelos disponíveis:")
-            for model in models['models']:
-                print(f"  - {model['name']}")
-        except Exception as e:
-            print(f"❌ Erro ao listar modelos: {e}")
-
-    def trocar_modelo(self, novo_modelo):
-        """
-        Troca o modelo sendo usado
-
-        Args:
-            novo_modelo (str): Nome do novo modelo
-        """
-        self.model = novo_modelo
-        print(f"✅ Modelo alterado para: {novo_modelo}")

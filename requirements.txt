@@ -1,0 +1,24 @@
+# Audio
+sounddevice>=0.4.6
+scipy>=1.11.0
+numpy>=1.26.0,<2.0.0
+
+# Whisper
+openai-whisper>=20231117
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# Text-to-Speech
+edge-tts>=6.1.0
+playsound==1.2.2
+
+# AI Models
+ollama>=0.3.0
+google-generativeai>=0.3.0
+
+# Screen Capture
+mss>=9.0.0
+Pillow>=10.0.0
+
+# Environment Variables
+python-dotenv>=1.0.0
